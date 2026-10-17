@@ -32,5 +32,7 @@ forgotPasswordSchema.pre("save" , async function () {
      }
 });
 
+forgotPasswordSchema.index({ user_id: 1 });
+
 // EXPORTS...
 module.exports = model("forgotPasswords" , forgotPasswordSchema);

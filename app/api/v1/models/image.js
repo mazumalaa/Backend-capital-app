@@ -31,5 +31,7 @@ const imageModel = new Schema({
      }
 })
 
+imageModel.index({ user_id: 1 });
+
 // EXPORTS...
 module.exports = model("Images" , imageModel);

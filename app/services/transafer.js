@@ -18,6 +18,37 @@ async function getContactService(req) {
      return receiver;
 }
 
+async function searchReceiversService(req) {
+     const keyword = typeof req.query.keyword === "string" ? req.query.keyword.trim().slice(0, 50) : "";
+     if (keyword.length < 2) return [];
+
+     const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+     const matcher = new RegExp(escapedKeyword, "i");
+     const users = await User.find({
+          _id: { $ne: req.user._id },
+          is_verified: true,
+          $or: [
+               { username: matcher },
+               { phone: matcher },
+          ],
+     })
+          .select("_id username phone")
+          .limit(10)
+          .lean();
+
+     const normalizedKeyword = keyword.toLowerCase();
+     const matchPriority = user => {
+          const username = user.username?.toLowerCase() || "";
+          const phone = user.phone || "";
+          if (username.startsWith(normalizedKeyword)) return 0;
+          if (username.includes(normalizedKeyword)) return 1;
+          if (phone.startsWith(keyword)) return 2;
+          return 3;
+     };
+
+     return users.sort((first, second) => matchPriority(first) - matchPriority(second));
+}
+
 async function getReceiverPhoto(req) {
      const {user_id} = req.query;
      const photo = await Image.findOne({user_id});
@@ -86,4 +117,4 @@ async function transaferService(req) {
      return;
 }
 
-module.exports = {transaferService, getContactService, getReceiverPhoto};
+module.exports = {transaferService, getContactService, searchReceiversService, getReceiverPhoto};

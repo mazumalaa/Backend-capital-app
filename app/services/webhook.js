@@ -55,6 +55,7 @@ async function applyTopupStatus(notification) {
      return {
           status: transaction_status,
           order_id,
+          amount: topup.amount,
           credited: isSuccessful && currentTopup?.status === "success",
      };
 }

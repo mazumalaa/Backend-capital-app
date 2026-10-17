@@ -1,4 +1,4 @@
-const { transaferService, getContactService, getReceiverPhoto } = require("../../../services/transafer");
+const { transaferService, getContactService, searchReceiversService, getReceiverPhoto } = require("../../../services/transafer");
 
 function receiverSummary(user) {
      if (!user) return user;
@@ -35,6 +35,19 @@ async function getContact(req,res,next) {
      }
 }
 
+async function searchReceivers(req, res, next) {
+     try {
+          const users = await searchReceiversService(req);
+          res.status(200).json({
+               code: "200",
+               status: "OK",
+               data: users.map(receiverSummary),
+          });
+     } catch (err) {
+          next(err);
+     }
+}
+
 async function getReceiver(req,res,next) {
      try{
           const response = await getReceiverPhoto(req);
@@ -48,4 +61,4 @@ async function getReceiver(req,res,next) {
      }
 }
 
-module.exports = {transfer, getContact, getReceiver}
+module.exports = {transfer, getContact, searchReceivers, getReceiver};

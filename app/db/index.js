@@ -1,6 +1,6 @@
 // IMPORTS...
 const mongoose = require("mongoose");
-const { DB_CONNECTION } = require("../config");
+const { DB_CONNECTION, DB_NAME } = require("../config");
 
 let connectionPromise;
 
@@ -17,9 +17,10 @@ async function connectDB() {
 
   if (!connectionPromise) {
     connectionPromise = mongoose.connect(DB_CONNECTION, {
+      dbName: DB_NAME,
       serverSelectionTimeoutMS: 10000,
     }).then(() => {
-      console.log("Connected to MongoDB");
+      console.log(`Connected to MongoDB database "${DB_NAME}"`);
     }).catch(error => {
       connectionPromise = undefined;
       throw error;

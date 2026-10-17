@@ -28,4 +28,6 @@ const historySchema = new Schema({
   timestamps: true
 });
 
+historySchema.index({ user_id: 1, createdAt: -1 });
+
 module.exports = model("History", historySchema);

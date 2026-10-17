@@ -31,5 +31,7 @@ verifySchema.pre("save" , async function () {
      }
 })
 
+verifySchema.index({ user_id: 1 });
+
 // EXPORTS...
 module.exports = model("verify" , verifySchema);

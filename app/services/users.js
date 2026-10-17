@@ -15,6 +15,8 @@ const { NotFound } = require("../errors/notFound");
 const { uploadImage, deleteImage: deleteCloudinaryImage } = require("../libs/cloudinary");
 const { deleteImage: deleteLegacyGridFSImage } = require("../libs/gridfs");
 const mongoose = require("mongoose");
+const validator = require("validator");
+const { isStrongPassword, passwordRequirementsMessage } = require("../libs/passwordPolicy");
 
 const OTP_MAX_ATTEMPTS = 5;
 const OTP_LIFETIME_MS = 5 * 60 * 1000;
@@ -79,12 +81,31 @@ function serializeImage(image) {
 
 // ========== AUTH ========== //
 async function serviceRegister(req) {
-     const { username, email, password, confirmPassword, phone } = req.body;
-     const user = await userModel.findOne({ email });
-     if (user) throw new Conflict("invalid credentials");
-     if (password != confirmPassword) throw new BadRequest("Password confirmation does not match");
+     const { username, email, password, confirmPassword, phone } = req.body || {};
+     const normalizedUsername = typeof username === "string" ? username.trim() : undefined;
+     const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+     const normalizedPhone = typeof phone === "string" ? phone.trim() : "";
+
+     if (!normalizedEmail || !normalizedPhone) {
+          throw new BadRequest("Email dan nomor telepon wajib diisi.");
+     }
+     if (!validator.isEmail(normalizedEmail)) {
+          throw new BadRequest("Masukkan alamat email yang valid.");
+     }
+     if (typeof password !== "string" || !isStrongPassword(password)) {
+          throw new BadRequest(passwordRequirementsMessage);
+     }
+     if (password !== confirmPassword) {
+          throw new BadRequest("Konfirmasi kata sandi tidak cocok.");
+     }
+
      const OTP = generatorOTP();
-     const newUser = await userModel.create({ username, email, password, phone });
+     const newUser = await userModel.create({
+          username: normalizedUsername,
+          email: normalizedEmail,
+          password,
+          phone: normalizedPhone,
+     });
      await verifyModel.create({ user_id: newUser._id, otp: OTP, expire_at: new Date(Date.now() + 5 * 60 * 1000) });
      await forgotPassworModel.create({ user_id: newUser._id, otp: null, expire_at: null });
      let delivery;
@@ -103,8 +124,11 @@ async function serviceRegister(req) {
 }
 
 async function serviceLogin(req) {
-     const { email, password } = req.body;
+     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+     const { password } = req.body || {};
      const user = await userModel.findOne({ email })
+          .select("_id email password is_verified token_version")
+          .lean();
      if (!user) throw new Unauthorized("Invalid email or password");
      if (!user.is_verified) throw new Unauthorized("account has not been verified");
      if (!await bcryptjs.compare(password, user.password)) throw new Unauthorized("Invalid email or password");
@@ -113,8 +137,10 @@ async function serviceLogin(req) {
 }
 
 async function resendOtpService(req) {
-     const verify = await verifyModel.findOne({ user_id: req.user._id });
-     const user = await userModel.findById(req.user._id);
+     const [verify, user] = await Promise.all([
+          verifyModel.findOne({ user_id: req.user._id }),
+          userModel.findById(req.user._id).select("email").lean(),
+     ]);
      if (!verify) throw new NotFound("User not found");
      if (!user) throw new NotFound("User not found");
      let OTP;
@@ -151,7 +177,7 @@ async function verifyOtpService(req) {
 
 // ========== PROFILE ========== //
 async function getProfileService(req) {
-     const user = await userModel.findById(req.user._id).select("-password");
+     const user = await userModel.findById(req.user._id).select("-password").lean();
      if (!user) throw new NotFound("User not found");
      return user;
 }
@@ -267,32 +293,30 @@ async function getUserService(req) {
           .find(filter)
           .select("-password -pin")
           .skip(skip)
-          .limit(limitNumber);
+          .limit(limitNumber)
+          .lean();
 
      return { page: pageNumber, limit: limitNumber, skip, total, users };
 }
 
 
 async function createUser(req) {
-     const { username, password, email, phone, role } = req.body;
-     const condition = {};
-     if (email) condition.email = email;
-     if (phone) condition.phone = phone;
+     const { username, password, role } = req.body || {};
+     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+     const phone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
      if (!email || !phone) throw new BadRequest("Email and phone are required");
-     const user = await userModel.findOne(condition);
-     if (user) throw new Conflict("User already exists");
      const newUser = await userModel.create({ username, email, phone, role, password });
      return newUser;
 }
 
 async function updateUser(req) {
      const { user_id } = req.params;
-     const { username, email, phone, role, password } = req.body;
+     const { username, email, phone, role, password } = req.body || {};
      const user = await userModel.findById(user_id);
      if (!user) throw new NotFound("User not found");
      if (username !== undefined) user.username = username;
      if (phone !== undefined) user.phone = phone;
-     if (email !== undefined) user.email = email;
+     if (email !== undefined) user.email = typeof email === "string" ? email.trim().toLowerCase() : email;
      if (password !== undefined) {
           user.password = password;
           user.token_version = (user.token_version || 0) + 1;
@@ -330,8 +354,8 @@ async function deleteUser(req) {
 
 // ========== FORGOT-PASSWORD ========== //
 async function forgotPasswordService(req) {
-     const { email } = req.body;
-     const user = await userModel.findOne({ email });
+     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+     const user = await userModel.findOne({ email }).select("_id email").lean();
      if (!user) return;
      const OTP = generatorOTP();
      let resetRecord = await forgotPassworModel.findOne({ user_id: user._id });
@@ -347,7 +371,8 @@ async function forgotPasswordService(req) {
 }
 
 async function resetPasswordService(req) {
-     const { email, otp, password, confirmPassword } = req.body;
+     const { otp, password, confirmPassword } = req.body;
+     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
      if (typeof email !== "string" || !email) {
           throw new BadRequest("Email is required to reset the password");
      }
@@ -375,12 +400,13 @@ async function resetPasswordService(req) {
 
 // ========== UPDATE-EMAIL ========== //
 async function emailOTPservice(req) {
-     const { email } = req.body;
+     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
      if (typeof email !== "string" || !email) throw new BadRequest("Email is required");
-     const user = await userModel.findById(req.user._id);
+     if (!validator.isEmail(email)) throw new BadRequest("Masukkan alamat email yang valid.");
+     const user = await userModel.findById(req.user._id).select("_id email").lean();
      if (!user) throw new NotFound("User not found");
-     const existingUser = await userModel.findOne({ email });
-     if (existingUser && !existingUser._id.equals(user._id)) {
+     const existingUser = await userModel.exists({ email, _id: { $ne: user._id } });
+     if (existingUser) {
           throw new Conflict("Email is already in use");
      }
      const verify = await verifyModel.findOne({ user_id: user._id });
@@ -395,14 +421,16 @@ async function emailOTPservice(req) {
 }
 
 async function updateEmailService(req) {
-     const { otp, email, confirmEmail } = req.body;
+     const { otp } = req.body;
+     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+     const confirmEmail = typeof req.body?.confirmEmail === "string" ? req.body.confirmEmail.trim().toLowerCase() : "";
      const user = await userModel.findById(req.user._id);
      if (!user) throw new NotFound("User not found");
-     if (typeof email !== "string" || email !== confirmEmail) {
+     if (!validator.isEmail(email) || email !== confirmEmail) {
           throw new BadRequest("Email confirmation does not match");
      }
-     const existingUser = await userModel.findOne({ email });
-     if (existingUser && !existingUser._id.equals(user._id)) {
+     const existingUser = await userModel.exists({ email, _id: { $ne: user._id } });
+     if (existingUser) {
           throw new Conflict("Email is already in use");
      }
      const verify = await validateOtp(verifyModel, { user_id: user._id }, otp);

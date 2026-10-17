@@ -2,6 +2,7 @@
 const mongoose = require("mongoose");
 const validator = require("validator");
 const bcryptjs = require("bcryptjs");
+const { isStrongPassword, passwordRequirementsMessage } = require("../../../libs/passwordPolicy");
 const { Schema, model } = mongoose;
 
 // SCHEMA...
@@ -25,16 +26,8 @@ const userSchema = new Schema({
           type: String,
           required: [true, "User password required"],
           validate: {
-               validator: (value) => {
-                    return validator.isStrongPassword(value, {
-                         minLength: 8,
-                         minLowercase: 1,
-                         minUppercase: 1,
-                         minNumbers: 1,
-                         minSymbols: 1,
-                    })
-               },
-               message: "Password must be at least 8 characters and include lowercase, uppercase, number, and symbol characters"
+               validator: isStrongPassword,
+               message: passwordRequirementsMessage,
           }
      },
      phone: {
@@ -81,6 +74,8 @@ userSchema.pre("save", async function () {
      if (this.isModified("password")) this.password = await bcryptjs.hash(String(this.password), 12);
      if (this.isModified("pin") && this.pin !== null) this.pin = await bcryptjs.hash(String(this.pin), 12);
 })
+
+userSchema.index({ is_verified: 1 });
 
 // EXPORTS...
 module.exports = model('User', userSchema);
