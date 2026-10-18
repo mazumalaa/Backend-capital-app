@@ -4,6 +4,12 @@ const historyModel = require("../api/v1/models/history");
 const verifyModel = require("../api/v1/models/verify");
 const forgotPassworModel = require("../api/v1/models/forgotPassword");
 const imageModel = require("../api/v1/models/image");
+const Notification = require("../api/v1/models/notification");
+const Contact = require("../api/v1/models/contact");
+const ContactRequest = require("../api/v1/models/contactRequest");
+const Message = require("../api/v1/models/message");
+const Transfer = require("../api/v1/models/transafer");
+const Topup = require("../api/v1/models/topup");
 const { BadRequest } = require("../errors/badRequest");
 const { Conflict } = require("../errors/conflict");
 const generatorOTP = require("../libs/otpGenerator");
@@ -20,6 +26,11 @@ const { isStrongPassword, passwordRequirementsMessage } = require("../libs/passw
 
 const OTP_MAX_ATTEMPTS = 5;
 const OTP_LIFETIME_MS = 5 * 60 * 1000;
+const UNVERIFIED_ACCOUNT_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const REGISTRATION_CLEANUP_INTERVAL_MS = 60 * 1000;
+const REGISTRATION_CLEANUP_BATCH_SIZE = 25;
+let registrationCleanupStarted = false;
+let registrationCleanupTimer;
 
 async function validateOtp(model, filter, otp) {
      if (typeof otp !== "string" || !/^\d{6}$/.test(otp)) {
@@ -71,12 +82,27 @@ function publicUser(user) {
      }
      delete result.password;
      delete result.pin;
+     delete result.unverified_expires_at;
      return result;
 }
 
 function serializeImage(image) {
      if (!image) return null;
      return image.toObject();
+}
+
+async function createPendingRegistrationNotification(user) {
+     const admin = await userModel.findOne({ role: "admin", is_verified: true })
+          .select("_id")
+          .lean();
+     if (!admin) throw new NotFound("Admin account is unavailable");
+     return Notification.create({
+          recipient_id: admin._id,
+          actor_id: user._id,
+          type: "user_registration_pending",
+          title: "Verifikasi akun baru",
+          body: `${user.username || "Pengguna"} (${user.email}) menunggu verifikasi email.`,
+     });
 }
 
 // ========== AUTH ========== //
@@ -100,59 +126,109 @@ async function serviceRegister(req) {
      }
 
      const OTP = generatorOTP();
+     const otpExpiresAt = new Date(Date.now() + OTP_LIFETIME_MS);
      const newUser = await userModel.create({
           username: normalizedUsername,
           email: normalizedEmail,
           password,
           phone: normalizedPhone,
+          unverified_expires_at: new Date(Date.now() + UNVERIFIED_ACCOUNT_LIFETIME_MS),
      });
-     await verifyModel.create({ user_id: newUser._id, otp: OTP, expire_at: new Date(Date.now() + 5 * 60 * 1000) });
-     await forgotPassworModel.create({ user_id: newUser._id, otp: null, expire_at: null });
-     let delivery;
      try {
-          delivery = await mail(newUser.email, OTP, "verify");
+          await verifyModel.create({
+               user_id: newUser._id,
+               otp: OTP,
+               expire_at: otpExpiresAt,
+          });
+          await forgotPassworModel.create({ user_id: newUser._id, otp: null, expire_at: null });
+          await createPendingRegistrationNotification(newUser);
+          const delivery = await mail(newUser.email, OTP, "verify");
+          const token = createToken({
+               _id: newUser._id,
+               tokenVersion: newUser.token_version,
+               purpose: "email_verification",
+          });
+          return {
+               newUser: publicUser(newUser),
+               token,
+               emailRecipient: delivery.recipient,
+               otpExpiresAt: otpExpiresAt.toISOString(),
+          };
      } catch (err) {
           await Promise.all([
                userModel.deleteOne({ _id: newUser._id }),
                verifyModel.deleteOne({ user_id: newUser._id }),
                forgotPassworModel.deleteOne({ user_id: newUser._id }),
+               Notification.deleteMany({
+                    actor_id: newUser._id,
+                    type: "user_registration_pending",
+               }),
           ]);
           throw err;
      }
-     const token = createToken({ _id: newUser._id, tokenVersion: newUser.token_version });
-     return { newUser: publicUser(newUser), token, emailRecipient: delivery.recipient };
 }
 
 async function serviceLogin(req) {
      const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
      const { password } = req.body || {};
      const user = await userModel.findOne({ email })
-          .select("_id email password is_verified token_version")
+          .select("_id email password is_verified token_version +unverified_expires_at")
           .lean();
      if (!user) throw new Unauthorized("Invalid email or password");
-     if (!user.is_verified) throw new Unauthorized("account has not been verified");
      if (!await bcryptjs.compare(password, user.password)) throw new Unauthorized("Invalid email or password");
-     const token = createToken({ _id: user._id, tokenVersion: user.token_version || 0 })
+     if (!user.is_verified) {
+          if (!user.unverified_expires_at || user.unverified_expires_at <= new Date()) {
+               throw new Unauthorized("Registration expired. Please register again");
+          }
+          const verification = await verifyModel.findOne({ user_id: user._id })
+               .select("expire_at")
+               .lean();
+          return {
+               token: createToken({
+                    _id: user._id,
+                    tokenVersion: user.token_version || 0,
+                    purpose: "email_verification",
+               }),
+               verificationRequired: true,
+               otpExpiresAt: verification?.expire_at?.toISOString() || null,
+               emailRecipient: `${user.email.split("@")[0].slice(0, 1)}***@${user.email.split("@")[1]}`,
+          };
+     }
+     const token = createToken({ _id: user._id, tokenVersion: user.token_version || 0 });
      return token;
 }
 
 async function resendOtpService(req) {
-     const [verify, user] = await Promise.all([
+     let [verify, user] = await Promise.all([
           verifyModel.findOne({ user_id: req.user._id }),
-          userModel.findById(req.user._id).select("email").lean(),
+          userModel.findById(req.user._id)
+               .select("_id email is_verified unverified_expires_at")
+               .lean(),
      ]);
-     if (!verify) throw new NotFound("User not found");
      if (!user) throw new NotFound("User not found");
+     if (
+          user.is_verified
+          || !user.unverified_expires_at
+          || user.unverified_expires_at <= new Date()
+     ) {
+          throw new NotFound("Registration expired. Please register again");
+     }
+     if (!verify) {
+          verify = new verifyModel({ user_id: user._id });
+     }
      let OTP;
      do {
           OTP = generatorOTP();
      } while (verify.otp && await bcryptjs.compare(OTP, verify.otp));
      verify.otp = OTP;
-     verify.expire_at = new Date(Date.now() + 5 * 60 * 1000);
+     verify.expire_at = new Date(Date.now() + OTP_LIFETIME_MS);
      verify.attempts = 0;
      await verify.save();
      const delivery = await mail(user.email, OTP, "verify");
-     return { recipient: delivery.recipient };
+     return {
+          recipient: delivery.recipient,
+          expiresAt: verify.expire_at.toISOString(),
+     };
 }
 
 async function verifyOtpService(req) {
@@ -162,17 +238,47 @@ async function verifyOtpService(req) {
      try {
           await session.withTransaction(async () => {
                await consumeOtp(verifyModel, verify, session);
-               const user = await userModel.findByIdAndUpdate(
-                    req.user._id,
-                    { is_verified: true },
+               const user = await userModel.findOneAndUpdate(
+                    {
+                         _id: req.user._id,
+                         role: "user",
+                         is_verified: false,
+                         unverified_expires_at: { $gt: new Date() },
+                    },
+                    {
+                         $set: { is_verified: true },
+                         $unset: { unverified_expires_at: 1 },
+                    },
                     { new: true, session }
                );
-               if (!user) throw new NotFound("User not found");
+               if (!user) throw new NotFound("Registration expired. Please register again");
+               const admin = await userModel.findOne({ role: "admin" })
+                    .select("_id")
+                    .session(session);
+               if (admin) {
+                    await Notification.deleteMany({
+                         recipient_id: admin._id,
+                         actor_id: user._id,
+                         type: "user_registration_pending",
+                    }, { session });
+                    await Notification.create([{
+                         recipient_id: admin._id,
+                         actor_id: user._id,
+                         type: "user_registered",
+                         title: "Sistem info",
+                         body: `Registrasi ${user.username || "pengguna"} berhasil diselesaikan.`,
+                    }], { session });
+               }
           });
      } finally {
           await session.endSession();
      }
-     return;
+     return {
+          token: createToken({
+               _id: req.user._id,
+               tokenVersion: req.user.token_version || 0,
+          }),
+     };
 }
 
 // ========== PROFILE ========== //
@@ -261,7 +367,7 @@ async function getUserService(req) {
      const page = req.query.page || 1;
      const requestedLimit = req.query.limit || 20;
      const user_id = req.user._id;
-     const filter = {};
+     const filter = { role: "user" };
 
      // Exclude current user
      if (user_id) {
@@ -288,13 +394,16 @@ async function getUserService(req) {
      const limitNumber = Math.min(100, Math.max(1, Number.parseInt(requestedLimit, 10) || 20));
      const skip = (pageNumber - 1) * limitNumber;
 
-     const total = await userModel.countDocuments(filter);
-     const users = await userModel
-          .find(filter)
-          .select("-password -pin")
-          .skip(skip)
-          .limit(limitNumber)
-          .lean();
+     const [total, users] = await Promise.all([
+          userModel.countDocuments(filter),
+          userModel
+               .find(filter)
+               .select("-password -pin")
+               .sort({ _id: 1 })
+               .skip(skip)
+               .limit(limitNumber)
+               .lean(),
+     ]);
 
      return { page: pageNumber, limit: limitNumber, skip, total, users };
 }
@@ -326,29 +435,211 @@ async function updateUser(req) {
      return user;
 }
 
+async function deleteUsersByIds(values, actorId, options = {}) {
+     if (!Array.isArray(values) || values.length === 0 || values.length > 100) {
+          throw new BadRequest("Select between 1 and 100 users to delete");
+     }
+     if (values.some(value => typeof value !== "string" || !mongoose.Types.ObjectId.isValid(value))) {
+          throw new BadRequest("One or more user IDs are invalid");
+     }
+
+     const userIds = [...new Set(values.map(value => String(value)))];
+     const objectIds = userIds.map(value => new mongoose.Types.ObjectId(value));
+     if (actorId && userIds.includes(String(actorId))) {
+          throw new BadRequest("You cannot delete your own account");
+     }
+
+     const session = await mongoose.startSession();
+     let users = [];
+     let images = [];
+     try {
+          await session.withTransaction(async () => {
+               const userFilter = {
+                    _id: { $in: objectIds },
+                    role: "user",
+               };
+               if (options.pendingRegistrationOnly || options.expiredUnverifiedOnly) {
+                    userFilter.is_verified = false;
+               }
+               if (options.expiredUnverifiedOnly) {
+                    userFilter.unverified_expires_at = { $lte: new Date() };
+               }
+               users = await userModel.find(userFilter).select("_id phone").session(session).lean();
+               if (users.length !== userIds.length) {
+                    throw new BadRequest(options.pendingRegistrationOnly
+                         ? "Only unverified user registrations can be deleted"
+                         : "Only existing user accounts can be deleted");
+               }
+               if (options.pendingRegistrationOnly) {
+                    const pendingNotification = await Notification.exists({
+                         recipient_id: actorId,
+                         actor_id: { $in: objectIds },
+                         type: "user_registration_pending",
+                    }).session(session);
+                    if (!pendingNotification) throw new NotFound("Pending registration not found");
+               }
+
+               images = await imageModel.find({
+                    user_id: { $in: objectIds },
+               }).session(session).lean();
+               const transfers = await Transfer.find({
+                    $or: [
+                         { sender_id: { $in: objectIds } },
+                         { receiver_id: { $in: objectIds } },
+                    ],
+               }).select("_id").session(session).lean();
+               const transactionIds = transfers.map(transfer => transfer._id);
+               const transferDescriptions = users.flatMap(user => user.phone
+                    ? [`Transfer to ${user.phone}`, `Transfer from ${user.phone}`]
+                    : []);
+
+               await verifyModel.deleteMany({ user_id: { $in: objectIds } }, { session });
+               await forgotPassworModel.deleteMany({ user_id: { $in: objectIds } }, { session });
+               await imageModel.deleteMany({ user_id: { $in: objectIds } }, { session });
+               await Contact.deleteMany({
+                    $or: [
+                         { user_id: { $in: objectIds } },
+                         { contact_user_id: { $in: objectIds } },
+                    ],
+               }, { session });
+               await ContactRequest.deleteMany({
+                    $or: [
+                         { requester_id: { $in: objectIds } },
+                         { recipient_id: { $in: objectIds } },
+                    ],
+               }, { session });
+               await Message.deleteMany({
+                    $or: [
+                         { sender_id: { $in: objectIds } },
+                         { receiver_id: { $in: objectIds } },
+                    ],
+               }, { session });
+               await Notification.deleteMany({
+                    $or: [
+                         { recipient_id: { $in: objectIds } },
+                         { actor_id: { $in: objectIds } },
+                    ],
+               }, { session });
+               await Transfer.deleteMany({
+                    $or: [
+                         { sender_id: { $in: objectIds } },
+                         { receiver_id: { $in: objectIds } },
+                    ],
+               }, { session });
+               await Topup.deleteMany({ user_id: { $in: objectIds } }, { session });
+               await historyModel.deleteMany({
+                    $or: [
+                         { user_id: { $in: objectIds } },
+                         ...(transactionIds.length ? [{ transaction_id: { $in: transactionIds } }] : []),
+                         ...(transferDescriptions.length
+                              ? [{ type: "transfer", description: { $in: transferDescriptions } }]
+                              : []),
+                    ],
+               }, { session });
+
+               const deletedUsers = await userModel.deleteMany({
+                    _id: { $in: objectIds },
+                    role: "user",
+               }, { session });
+               if (deletedUsers.deletedCount !== objectIds.length) {
+                    throw new Conflict("User accounts changed while deletion was in progress");
+               }
+          });
+     } finally {
+          await session.endSession();
+     }
+
+     const imageCleanup = await Promise.allSettled(images.flatMap(image => [
+          ...(image.cloudinary_public_id
+               ? [Promise.resolve().then(() => deleteCloudinaryImage(image.cloudinary_public_id))]
+               : []),
+          ...(image.file_id ? [Promise.resolve().then(() => deleteLegacyGridFSImage(image.file_id))] : []),
+     ]));
+     const failedImageCleanup = imageCleanup.filter(result => result.status === "rejected");
+     failedImageCleanup.forEach(result => {
+          console.error("Failed to remove profile image after user deletion:", result.reason);
+     });
+     return {
+          deleted: users.length,
+          imageCleanupFailed: failedImageCleanup.length > 0,
+     };
+}
+
 async function deleteUser(req) {
-     const { user_id } = req.params;
+     return deleteUsersByIds([req.params.user_id], req.user?._id);
+}
 
-     const user = await userModel.findById(user_id);
-     if (!user) throw new NotFound("User not found");
+async function deleteUsers(req) {
+     return deleteUsersByIds(req.body?.userIds, req.user?._id);
+}
 
-     // Remove the profile image from its storage provider.
-     const image = await imageModel.findOne({ user_id });
-     if (image?.cloudinary_public_id) await deleteCloudinaryImage(image.cloudinary_public_id);
-     if (image?.file_id) await deleteLegacyGridFSImage(image.file_id);
+async function deleteUnverifiedRegistration(req) {
+     return deleteUsersByIds(
+          [req.params.userId],
+          req.user?._id,
+          { pendingRegistrationOnly: true }
+     );
+}
 
-     // Hapus semua yang berhubungan dengan user
-     await Promise.all([
-          verifyModel.deleteOne({ user_id }),
-          forgotPassworModel.deleteOne({ user_id }),
-          imageModel.deleteOne({ user_id }),
-          historyModel.deleteMany({ user_id }) // pastikan history pakai field `user_id`
-     ]);
+async function cleanupExpiredRegistrations() {
+     const expiredUsers = await userModel.find({
+          role: "user",
+          is_verified: false,
+          unverified_expires_at: { $lte: new Date() },
+     }).select("_id").sort({ unverified_expires_at: 1 }).limit(REGISTRATION_CLEANUP_BATCH_SIZE).lean();
+     if (!expiredUsers.length) return 0;
 
-     // Hapus user terakhir
-     await userModel.findByIdAndDelete(user_id);
+     try {
+          const result = await deleteUsersByIds(
+               expiredUsers.map(user => String(user._id)),
+               null,
+               { expiredUnverifiedOnly: true }
+          );
+          return result.deleted;
+     } catch (error) {
+          if (error.status === 400) return 0;
+          throw error;
+     }
+}
 
-     return;
+function scheduleRegistrationCleanup(delay = REGISTRATION_CLEANUP_INTERVAL_MS) {
+     registrationCleanupTimer = setTimeout(async () => {
+          registrationCleanupTimer = undefined;
+          try {
+               await cleanupExpiredRegistrations();
+          } catch (error) {
+               console.error("Could not clean up expired unverified registrations:", error);
+          } finally {
+               scheduleRegistrationCleanup();
+          }
+     }, delay);
+     registrationCleanupTimer.unref?.();
+}
+
+async function startRegistrationCleanup() {
+     if (registrationCleanupStarted) return registrationCleanupTimer;
+     await userModel.collection.updateMany(
+          {
+               role: "user",
+               is_verified: false,
+               unverified_expires_at: null,
+               createdAt: { $type: "date" },
+          },
+          [{
+               $set: {
+                    unverified_expires_at: {
+                         $add: ["$createdAt", UNVERIFIED_ACCOUNT_LIFETIME_MS],
+                    },
+               },
+          }]
+     );
+     await userModel.collection.createIndex(
+          { role: 1, is_verified: 1, unverified_expires_at: 1 },
+          { name: "unverified_registration_expiry" }
+     );
+     registrationCleanupStarted = true;
+     scheduleRegistrationCleanup(0);
+     return registrationCleanupTimer;
 }
 
 
@@ -490,6 +781,7 @@ async function updatePinService(req) {
 // EXPORTS...
 module.exports = {
      serviceRegister,
+     createPendingRegistrationNotification,
      serviceLogin,
      resendOtpService,
      verifyOtpService,
@@ -497,6 +789,10 @@ module.exports = {
      createUser,
      updateUser,
      deleteUser,
+     deleteUsers,
+     deleteUnverifiedRegistration,
+     cleanupExpiredRegistrations,
+     startRegistrationCleanup,
      forgotPasswordService,
      resetPasswordService,
      getProfileService,

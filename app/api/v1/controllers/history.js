@@ -1,4 +1,4 @@
-const { getOneHistory , getDetailHistory, getAllHistory, deleteHistory } = require("../../../services/history");
+const { getOneHistory , getDetailHistory, getAllHistory, deleteHistory, deleteHistories } = require("../../../services/history");
 
 async function histories(req,res,next) {
      try{
@@ -64,4 +64,18 @@ async function deleteHistoryController(req,res,next) {
      }
 }
 
-module.exports = {histories, historyOne , getDetail, deleteHistoryController};
+async function deleteHistoriesController(req, res, next) {
+     try {
+          const response = await deleteHistories(req);
+          res.status(200).json({
+               code: "200",
+               status: "OK",
+               message: "History items deleted",
+               data: response,
+          });
+     } catch (err) {
+          next(err);
+     }
+}
+
+module.exports = {histories, historyOne , getDetail, deleteHistoryController, deleteHistoriesController};

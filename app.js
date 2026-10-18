@@ -16,6 +16,8 @@ const transfer = require('./app/api/v1/routes/transfer');
 const history = require('./app/api/v1/routes/history');
 const topup = require('./app/api/v1/routes/topup');
 const contact = require('./app/api/v1/routes/contact');
+const chat = require('./app/api/v1/routes/chat');
+const notifications = require('./app/api/v1/routes/notifications');
 const baseURL = '/api/v1';
 
 // EXPRESS-GENERATOR-SET-UP...(OTHER)
@@ -30,6 +32,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use(baseURL , welcome);
 app.use(baseURL , user);
 app.use(baseURL , contact);
+app.use(baseURL , chat);
+app.use(baseURL , notifications);
 app.use(baseURL , webhook);
 app.use(baseURL , transfer);
 app.use(baseURL , history);

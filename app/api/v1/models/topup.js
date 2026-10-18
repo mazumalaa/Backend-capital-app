@@ -9,4 +9,7 @@ const topupSchema = new mongoose.Schema({
      timestamps:true,
 });
 
+topupSchema.index({ order_id: 1 }, { unique: true, sparse: true });
+topupSchema.index({ user_id: 1 });
+
 module.exports = mongoose.model('Topup', topupSchema);

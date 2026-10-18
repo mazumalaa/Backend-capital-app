@@ -33,7 +33,13 @@ async function getContactsController(req, res, next) {
     const contacts = await getContactsService(req);
     res.status(200).json({
       message: "Contacts retrieved successfully",
-      data: contacts
+      data: contacts.contacts,
+      page: {
+        total_page: Math.ceil(contacts.total / contacts.limit),
+        total_items: contacts.total,
+        page: contacts.page,
+        limit: contacts.limit,
+      },
     });
   } catch (err) {
     next(err);

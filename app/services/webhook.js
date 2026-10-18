@@ -35,6 +35,7 @@ async function applyTopupStatus(notification) {
 
                     await history.create([{
                          user_id: user._id,
+                         transaction_id: updatedTopup._id,
                          type: "topup",
                          flow: "in",
                          amount: updatedTopup.amount,

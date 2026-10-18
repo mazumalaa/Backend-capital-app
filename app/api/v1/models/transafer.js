@@ -8,4 +8,7 @@ const transferSchema = new Schema({
      status:{type:String, enum:["success" , "failed" , "pending"] , default:"success"},
 })
 
+transferSchema.index({ sender_id: 1 });
+transferSchema.index({ receiver_id: 1 });
+
 module.exports = model("Transfer" , transferSchema);

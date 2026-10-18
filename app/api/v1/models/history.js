@@ -6,6 +6,10 @@ const historySchema = new Schema({
     ref: "User",
     required: true
   },
+  transaction_id: {
+    type: Types.ObjectId,
+    default: null,
+  },
   type: {
     type: String,
     enum: ["topup", "transfer"],
@@ -28,6 +32,8 @@ const historySchema = new Schema({
   timestamps: true
 });
 
-historySchema.index({ user_id: 1, createdAt: -1 });
+historySchema.index({ transaction_id: 1 });
+historySchema.index({ user_id: 1, createdAt: -1, _id: -1 });
+historySchema.index({ createdAt: -1, _id: -1 });
 
 module.exports = model("History", historySchema);

@@ -16,4 +16,8 @@ const contactSchema = new Schema({
   }
 });
 
+contactSchema.index({ user_id: 1, _id: 1 });
+contactSchema.index({ user_id: 1, contact_user_id: 1 });
+contactSchema.index({ contact_user_id: 1 });
+
 module.exports = model("Contact" , contactSchema);

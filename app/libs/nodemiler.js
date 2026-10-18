@@ -4,6 +4,9 @@ const { EMAIL, GOOGLE_APP_PASSWORD } = require("../config");
 
 const transporter = nodemailer.createTransport({
      service: 'gmail',
+     connectionTimeout: 10000,
+     greetingTimeout: 10000,
+     socketTimeout: 20000,
      auth: {
           user: EMAIL,
           pass: GOOGLE_APP_PASSWORD

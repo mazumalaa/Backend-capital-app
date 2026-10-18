@@ -62,6 +62,11 @@ const userSchema = new Schema({
           type: Boolean,
           default: false,
      },
+     unverified_expires_at: {
+          type: Date,
+          default: null,
+          select: false,
+     },
      token_version: {
           type: Number,
           default: 0,
@@ -76,6 +81,11 @@ userSchema.pre("save", async function () {
 })
 
 userSchema.index({ is_verified: 1 });
+userSchema.index({ role: 1, _id: 1 });
+userSchema.index(
+     { role: 1, is_verified: 1, unverified_expires_at: 1 },
+     { name: "unverified_registration_expiry" }
+);
 
 // EXPORTS...
 module.exports = model('User', userSchema);

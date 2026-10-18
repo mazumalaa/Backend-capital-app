@@ -1,6 +1,10 @@
 // IMPORTS...
 const upload = require("../../../libs/multer");
-const { authMiddleware, roleMiddleware } = require("../../../middleware/auth");
+const {
+     authMiddleware,
+     verificationAuthMiddleware,
+     roleMiddleware,
+} = require("../../../middleware/auth");
 const { 
      register, 
      login, resendOTP, 
@@ -21,6 +25,7 @@ const {
      insertUser,
      editUser,
      removeUser,
+     removeUsers,
      getImage
 } = require("../controllers/users");
 const router = require("express").Router();
@@ -37,14 +42,15 @@ const authRateLimit = (limit, message) => rateLimit({
 // ========== AUTH =========== //
 router.post("/auth/register", authRateLimit(5, "Too many registration attempts. Try again later."), register);
 router.post("/auth/login", authRateLimit(10, "Too many login attempts. Try again later."), login);
-router.post("/auth/otp/send", authRateLimit(5, "Too many OTP requests. Try again later."), authMiddleware, resendOTP);
-router.post("/auth/otp/verify", authRateLimit(10, "Too many OTP attempts. Try again later."), authMiddleware, verifyOTP);
+router.post("/auth/otp/send", authRateLimit(5, "Too many OTP requests. Try again later."), verificationAuthMiddleware, resendOTP);
+router.post("/auth/otp/verify", authRateLimit(10, "Too many OTP attempts. Try again later."), verificationAuthMiddleware, verifyOTP);
 
 // ========== USERS ========== //
 router.get("/users" , authMiddleware , roleMiddleware("admin") , getUsers);
 router.post("/user" , authMiddleware , roleMiddleware("admin") , insertUser);
 router.put("/user/:user_id" , authMiddleware , roleMiddleware("admin") , editUser);
 router.delete("/user/:user_id" , authMiddleware , roleMiddleware("admin") , removeUser);
+router.delete("/users", authMiddleware, roleMiddleware("admin"), removeUsers);
 
 // ========== EMAIL ========== // 
 router.post("/profile/email/otp", authRateLimit(5, "Too many OTP requests. Try again later."), authMiddleware, roleMiddleware("admin", "user"), emailOTP);

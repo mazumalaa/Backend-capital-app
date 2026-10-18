@@ -13,7 +13,7 @@ async function getContactService(req) {
      if(!phone) return [];
      const user = await User.findById(req.user._id);
      if(phone == user.phone) throw new Conflict("Invalid receiver");
-     const receiver = await User.findOne({ phone, is_verified: true }).select("username phone");
+     const receiver = await User.findOne({ phone, is_verified: true, role: "user" }).select("username phone");
      if(!receiver)  throw new NotFound("User not found");
      return receiver;
 }
@@ -27,6 +27,7 @@ async function searchReceiversService(req) {
      const users = await User.find({
           _id: { $ne: req.user._id },
           is_verified: true,
+          role: "user",
           $or: [
                { username: matcher },
                { phone: matcher },
@@ -69,7 +70,7 @@ async function transaferService(req) {
      const sender = await User.findById(req.user._id);
      if (!sender) throw new NotFound("Sender not found");
      await verifyPin(sender, pin);
-     const receiver = await User.findOne({ phone, is_verified: true });
+     const receiver = await User.findOne({ phone, is_verified: true, role: "user" });
      if(!receiver) throw new NotFound("Receiver  not found");
      if(receiver._id.equals(sender._id)) throw new Conflict("Invalid receiver");
      const session = await mongoose.startSession();
@@ -89,7 +90,7 @@ async function transaferService(req) {
                );
                if (!creditedReceiver) throw new NotFound("Receiver not found");
 
-               await Transfer.create([{
+               const [transfer] = await Transfer.create([{
                     sender_id: sender._id,
                     receiver_id: receiver._id,
                     amount,
@@ -97,6 +98,7 @@ async function transaferService(req) {
                await History.insertMany([
                     {
                          user_id: sender._id,
+                         transaction_id: transfer._id,
                          type: "transfer",
                          flow: "out",
                          amount,
@@ -104,6 +106,7 @@ async function transaferService(req) {
                     },
                     {
                          user_id: receiver._id,
+                         transaction_id: transfer._id,
                          type: "transfer",
                          flow: "in",
                          amount,

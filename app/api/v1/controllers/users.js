@@ -18,7 +18,8 @@ const {
      confirmPin,
      createUser,
      updateUser,
-     deleteUser} = require("../../../services/users");
+     deleteUser,
+     deleteUsers: deleteUsersService} = require("../../../services/users");
 const mongoose = require("mongoose");
 const { findImage, openImageDownload } = require("../../../libs/gridfs");
 const { NotFound } = require("../../../errors/notFound");
@@ -31,6 +32,7 @@ function safeUser(user) {
      }
      delete result.password;
      delete result.pin;
+     delete result.unverified_expires_at;
      return result;
 }
 
@@ -46,6 +48,7 @@ async function register(req, res, next) {
                     user: safeUser(response.newUser),
                     token: response.token,
                     emailRecipient: response.emailRecipient,
+                    otpExpiresAt: response.otpExpiresAt,
                },
           })
      } catch (err) {
@@ -60,7 +63,11 @@ async function login(req, res, next) {
                code: "200",
                status: "OK",
                message: "Login successful",
-               data: response})
+               data: typeof response === "string" ? response : response.token,
+               verificationRequired: response.verificationRequired === true,
+               otpExpiresAt: response.otpExpiresAt || null,
+               emailRecipient: response.emailRecipient || null,
+          })
      } catch (err) {
           next(err);
      }
@@ -147,8 +154,23 @@ async function removeUser(req,res,next) {
                code:'200',
                status:"OK",
                message:"Success to delete user",
+               data: response,
           });
      }catch(err){
+          next(err);
+     }
+}
+
+async function removeUsers(req, res, next) {
+     try {
+          const response = await deleteUsersService(req);
+          res.status(200).json({
+               code: "200",
+               status: "OK",
+               message: "Users and related data deleted",
+               data: response,
+          });
+     } catch (err) {
           next(err);
      }
 }
@@ -351,6 +373,7 @@ module.exports = {
      insertUser,
      editUser,
      removeUser,
+     removeUsers,
      forgotPassword,
      resetPassword,
      updatePin,

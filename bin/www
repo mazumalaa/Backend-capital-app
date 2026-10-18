@@ -5,6 +5,8 @@
  */
 
 const { connectDB } = require('../app/db');
+const { startRegistrationCleanup } = require('../app/services/users');
+const mongoose = require('mongoose');
 
 const { PORT } = require('../app/config');
 const app = require('../app');
@@ -24,6 +26,7 @@ app.set('port', port);
  */
 
 var server = http.createServer(app);
+let isShuttingDown = false;
 
 /**
  * Listen on provided port, on all network interfaces.
@@ -33,13 +36,47 @@ server.on('error', onError);
 server.on('listening', onListening);
 
 connectDB()
-  .then(() => server.listen(port))
-  .catch(error => {
-    console.error('Failed to start backend because MongoDB is unavailable.');
+  .then(async () => {
+    await startRegistrationCleanup();
+    server.listen(port);
+  })
+  .catch(async error => {
+    console.error('Failed to initialize the backend before listening.');
     console.error(error);
     console.error('Check that the Atlas cluster is running, this IP is allowed in Network Access, and your network permits TLS connections.');
+    await mongoose.disconnect().catch(disconnectError => {
+      console.error('Failed to close MongoDB after startup failure.', disconnectError);
+    });
     process.exitCode = 1;
   });
+
+function shutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.info(`Received ${signal}; closing the HTTP server gracefully.`);
+
+  const forceCloseTimer = setTimeout(() => {
+    console.error('Graceful shutdown timed out; closing remaining HTTP connections.');
+    server.closeAllConnections();
+  }, 10000);
+
+  server.close(async error => {
+    clearTimeout(forceCloseTimer);
+    if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') {
+      console.error('Failed to close the HTTP server cleanly.', error);
+      process.exitCode = 1;
+    }
+    try {
+      await mongoose.disconnect();
+    } catch (disconnectError) {
+      console.error('Failed to close MongoDB cleanly.', disconnectError);
+      process.exitCode = 1;
+    }
+  });
+}
+
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
 
 /**
  * Normalize a port into a number, string, or false.

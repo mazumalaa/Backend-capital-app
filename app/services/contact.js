@@ -9,7 +9,7 @@ async function addContactService(req) {
   const { phone, alias } = req.body;
 
   // Cek user yang akan ditambahkan
-  const contactUser = await User.findOne({ phone });
+  const contactUser = await User.findOne({ phone, role: "user", is_verified: true });
   if (!contactUser) throw new NotFound("Contact user not found");
 
   // Tidak boleh simpan diri sendiri sebagai kontak
@@ -37,8 +37,29 @@ async function addContactService(req) {
 
 // GET ALL CONTACTS
 async function getContactsService(req) {
-  const contacts = await Contact.find({ user_id: req.user._id }).populate("contact_user_id", "username phone");
-  return contacts;
+  const query = req.query || {};
+  const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit, 10) || 10));
+  const filter = { user_id: req.user._id };
+  const [total, contacts] = await Promise.all([
+    Contact.countDocuments(filter),
+    Contact.find(filter)
+      .sort({ _id: 1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate({
+        path: "contact_user_id",
+        select: "username phone role",
+        match: { role: "user" },
+      }),
+  ]);
+  const visibleContacts = contacts.filter(contact => contact.contact_user_id);
+  return {
+    contacts: visibleContacts,
+    page,
+    limit,
+    total,
+  };
 }
 
 // UPDATE CONTACT
